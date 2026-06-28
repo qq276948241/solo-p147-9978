@@ -2,10 +2,22 @@ import curses
 from .game import Game, GameScene
 from .entities import NodeType
 from .battle import BattleState
-from .cards import CardType
+from .cards import CardType, StatusType
 
 
 LEFT_PANEL_WIDTH = 28
+
+
+def draw_statuses(stdscr, y: int, x: int, statuses, max_width: int):
+    cur_x = x
+    for s in statuses:
+        color = curses.color_pair(s.status_type.color_index)
+        text = s.display()
+        if cur_x + len(text) + 1 < x + max_width:
+            stdscr.addstr(y, cur_x, text, color | curses.A_BOLD)
+            cur_x += len(text) + 1
+        else:
+            break
 
 
 def draw_player_panel(stdscr, game: Game, y: int, x: int, h: int, w: int):
@@ -42,6 +54,12 @@ def draw_player_panel(stdscr, game: Game, y: int, x: int, h: int, w: int):
         stdscr.addstr(line, x + 1, f"⚡ 能量: {player.energy}/{player.max_energy}")
         line += 1
         stdscr.addstr(line, x + 1, f"🛡 护甲: {player.block}")
+        
+        if player.statuses:
+            line += 2
+            stdscr.addstr(line, x + 1, "═══ 状态 ═══", curses.color_pair(2))
+            line += 1
+            draw_statuses(stdscr, line, x + 1, player.statuses, w - 2)
 
     for i in range(h):
         stdscr.addstr(y + i, x + w - 1, "│")
@@ -128,7 +146,7 @@ def draw_battle_center(stdscr, game: Game, y: int, x: int, h: int, w: int):
             continue
         
         intent = enemy.intent_display()
-        color = curses.color_pair(4) if "攻击" in intent or "重击" in intent else curses.color_pair(5)
+        color = curses.color_pair(4) if "攻击" in intent or "重击" in intent or "毒击" in intent else curses.color_pair(5)
         stdscr.addstr(enemies_y, ex, f"⚠ {intent}", color | curses.A_BOLD)
         stdscr.addstr(enemies_y + 1, ex, f"👹 {enemy.name}")
         
@@ -137,6 +155,9 @@ def draw_battle_center(stdscr, game: Game, y: int, x: int, h: int, w: int):
         filled = int(enemy.hp / enemy.max_hp * hp_bar_len)
         stdscr.addstr(enemies_y + 2, ex, "[" + "█" * filled + "░" * (hp_bar_len - filled) + "]", curses.color_pair(3))
         stdscr.addstr(enemies_y + 3, ex, hp_text)
+        
+        if enemy.statuses:
+            draw_statuses(stdscr, enemies_y + 4, ex, enemy.statuses, enemy_width - 4)
     
     hand_y = y + h - 10
     stdscr.addstr(hand_y - 1, x + 1, "─" * (w - 2), curses.color_pair(7))
@@ -152,12 +173,17 @@ def draw_battle_center(stdscr, game: Game, y: int, x: int, h: int, w: int):
         color = curses.color_pair(4) if can_play else curses.color_pair(7)
         
         type_icon = {CardType.ATTACK: "⚔", CardType.DEFENSE: "🛡", CardType.HEAL: "❤"}[card.card_type]
-        card_text = f" {i+1}. [{card.cost}] {type_icon}{card.name}({card.value}) "
-        
-        if can_play:
-            stdscr.addstr(card_y, card_x, card_text, color | curses.A_BOLD)
+        card_text = f" {i+1}. [{card.cost}] {type_icon}{card.name}({card.value})"
+        if card.applies_status and card.status_type:
+            status_color = curses.color_pair(card.status_type.color_index)
+            stdscr.addstr(card_y, card_x, card_text, color | (curses.A_BOLD if can_play else 0))
+            suffix_x = card_x + len(card_text)
+            stdscr.addstr(card_y, suffix_x, f" {card.status_type.icon}", status_color | (curses.A_BOLD if can_play else 0))
         else:
-            stdscr.addstr(card_y, card_x, card_text, color)
+            if can_play:
+                stdscr.addstr(card_y, card_x, card_text, color | curses.A_BOLD)
+            else:
+                stdscr.addstr(card_y, card_x, card_text, color)
     
     turn_info = f"回合 {game.battle.turn}"
     if game.battle.state == BattleState.PLAYER_TURN:
@@ -184,7 +210,10 @@ def draw_card_reward_center(stdscr, game: Game, y: int, x: int, h: int, w: int):
         stdscr.addstr(card_y, cx, f" {i+1}. [{card.cost}] {type_icon} {card.name} ".center(24), curses.color_pair(4) | curses.A_BOLD)
         stdscr.addstr(card_y + 1, cx, f"  数值: {card.value}".center(24), curses.color_pair(5))
         stdscr.addstr(card_y + 2, cx, f"  {card.description}".center(24), curses.color_pair(7))
-        stdscr.addstr(card_y + 3, cx, "─" * 24, curses.color_pair(7))
+        if card.applies_status and card.status_type:
+            status_color = curses.color_pair(card.status_type.color_index)
+            stdscr.addstr(card_y + 3, cx, f"  {card.status_type.icon} {card.status_type.display_name}".center(24), status_color | curses.A_BOLD)
+        stdscr.addstr(card_y + 4, cx, "─" * 24, curses.color_pair(7))
 
 
 def draw_event_center(stdscr, game: Game, y: int, x: int, h: int, w: int):
@@ -219,7 +248,11 @@ def draw_event_center(stdscr, game: Game, y: int, x: int, h: int, w: int):
                 type_icon = {CardType.ATTACK: "⚔", CardType.DEFENSE: "🛡", CardType.HEAL: "❤"}[card.card_type]
                 can_buy = game.player.gold >= price
                 color = curses.color_pair(4) if can_buy else curses.color_pair(7)
-                stdscr.addstr(item_y + i, x + 2, f" {i+1}. [{card.cost}] {type_icon}{card.name}({card.value}) - {price}💰", color | (curses.A_BOLD if can_buy else 0))
+                text = f" {i+1}. [{card.cost}] {type_icon}{card.name}({card.value})"
+                if card.applies_status and card.status_type:
+                    text += f" {card.status_type.icon}"
+                text += f" - {price}💰"
+                stdscr.addstr(item_y + i, x + 2, text, color | (curses.A_BOLD if can_buy else 0))
         
         heal_y = item_y + 6
         can_heal = game.player.gold >= game.shop_event.heal_price and game.player.hp < game.player.max_hp
@@ -307,3 +340,8 @@ def init_colors():
     curses.init_pair(5, curses.COLOR_MAGENTA, 234)
     curses.init_pair(6, curses.COLOR_BLUE, 234)
     curses.init_pair(7, curses.COLOR_WHITE, 234)
+    curses.init_pair(8, 10, 234)
+    curses.init_pair(9, 13, 234)
+    curses.init_pair(10, 202, 234)
+    curses.init_pair(11, 9, 234)
+    curses.init_pair(12, 2, 234)

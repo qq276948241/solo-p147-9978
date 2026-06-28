@@ -1,5 +1,5 @@
 from .entities import Player, Enemy, create_enemies
-from .cards import Card
+from .cards import Card, StatusType
 
 
 class BattleState:
@@ -45,15 +45,35 @@ class Battle:
         self.player.block = 0
         self.state = BattleState.ENEMY_TURN
         self.log.append("--- 敌人回合 ---")
-        self._enemy_turn()
+        
+        for enemy in self.enemies:
+            if enemy.is_alive():
+                msgs = enemy.tick_statuses()
+                self.log.extend(msgs)
+        
+        self._check_victory()
+        if self.state != BattleState.VICTORY:
+            self._enemy_turn()
 
     def _enemy_turn(self):
         for enemy in self.enemies:
             if not enemy.is_alive():
                 continue
-            if enemy.next_action == "攻击" or enemy.next_action == "重击":
+            if enemy.next_action in ("攻击", "重击"):
+                base_dmg = enemy.next_value
+                dmg = int(base_dmg * enemy.get_attack_multiplier())
+                actual = self.player.take_damage(dmg)
+                self.log.append(f"{enemy.name}使用{enemy.next_action}，对你造成{actual}点伤害")
+                self._apply_thorns(enemy, actual)
+                if not self.player.is_alive():
+                    self.state = BattleState.DEFEAT
+                    self.log.append("=== 你被击败了 ===")
+                    return
+            elif enemy.next_action == "毒击":
                 dmg = self.player.take_damage(enemy.next_value)
-                self.log.append(f"{enemy.name}使用{enemy.next_action}，对你造成{dmg}点伤害")
+                status_msg = self.player.add_status(StatusType.POISON, 3, 3)
+                self.log.append(f"{enemy.name}使用毒击，对你造成{dmg}点伤害，{status_msg}")
+                self._apply_thorns(enemy, dmg)
                 if not self.player.is_alive():
                     self.state = BattleState.DEFEAT
                     self.log.append("=== 你被击败了 ===")
@@ -64,7 +84,22 @@ class Battle:
             return
         self._next_player_turn()
 
+    def _apply_thorns(self, attacker: Enemy, damage_dealt: int):
+        if damage_dealt > 0:
+            thorns = next((s for s in self.player.statuses if s.status_type == StatusType.THORNS), None)
+            if thorns:
+                reflect = thorns.value
+                actual = attacker.take_damage(reflect)
+                self.log.append(f"荆棘反弹，对{attacker.name}造成{actual}点伤害")
+
     def _next_player_turn(self):
+        msgs = self.player.tick_statuses()
+        self.log.extend(msgs)
+        if not self.player.is_alive():
+            self.state = BattleState.DEFEAT
+            self.log.append("=== 你被击败了 ===")
+            return
+        
         self.turn += 1
         self.player.energy = self.player.max_energy
         self.player.draw_cards(5)

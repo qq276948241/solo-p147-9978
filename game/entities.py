@@ -1,7 +1,20 @@
 import random
 from dataclasses import dataclass, field
 from enum import Enum
-from .cards import Card, create_starting_deck, shuffle
+from .cards import Card, create_starting_deck, shuffle, StatusType
+
+
+@dataclass
+class StatusEffect:
+    status_type: StatusType
+    duration: int
+    value: int = 0
+    
+    def display(self) -> str:
+        icon = self.status_type.icon
+        if self.status_type in (StatusType.POISON, StatusType.BURN):
+            return f"{icon}{self.value}({self.duration})"
+        return f"{icon}({self.duration})"
 
 
 class NodeType(Enum):
@@ -21,6 +34,7 @@ class Enemy:
     next_action: str = ""
     next_value: int = 0
     is_defending: bool = False
+    statuses: list[StatusEffect] = field(default_factory=list)
 
     def plan_action(self, difficulty: int = 1):
         roll = random.random()
@@ -32,10 +46,51 @@ class Enemy:
             self.next_action = "重击"
             self.next_value = random.randint(10, 15) + difficulty * 3
             self.is_defending = False
+        elif roll < 0.95:
+            self.next_action = "毒击"
+            self.next_value = random.randint(3, 6) + difficulty
+            self.is_defending = False
         else:
             self.next_action = "防御"
             self.next_value = random.randint(5, 10) + difficulty
             self.is_defending = True
+
+    def add_status(self, status_type: StatusType, duration: int, value: int = 0) -> str:
+        existing = next((s for s in self.statuses if s.status_type == status_type), None)
+        if existing:
+            if status_type in (StatusType.POISON, StatusType.BURN):
+                existing.value += value
+                existing.duration = max(existing.duration, duration)
+            else:
+                existing.duration = max(existing.duration, duration)
+        else:
+            self.statuses.append(StatusEffect(status_type, duration, value))
+        return f"{self.name}获得{status_type.name}状态"
+
+    def get_attack_multiplier(self) -> float:
+        mult = 1.0
+        for s in self.statuses:
+            if s.status_type == StatusType.WEAK:
+                mult *= 0.5
+        return mult
+
+    def tick_statuses(self) -> list[str]:
+        messages = []
+        to_remove = []
+        for s in self.statuses:
+            if s.status_type == StatusType.POISON:
+                dmg = self.take_damage(s.value)
+                messages.append(f"{self.name}因中毒受到{dmg}点伤害")
+            elif s.status_type == StatusType.BURN:
+                dmg = self.take_damage(s.value)
+                messages.append(f"{self.name}因燃烧受到{dmg}点伤害")
+                s.value += 3
+            s.duration -= 1
+            if s.duration <= 0:
+                to_remove.append(s)
+        for s in to_remove:
+            self.statuses.remove(s)
+        return messages
 
     def take_damage(self, damage: int) -> int:
         actual = max(0, damage)
@@ -46,11 +101,17 @@ class Enemy:
         return self.hp > 0
 
     def intent_display(self) -> str:
-        if self.next_action == "攻击" or self.next_action == "重击":
-            return f"{self.next_action}{self.next_value}"
+        if self.next_action in ("攻击", "重击"):
+            dmg = int(self.next_value * self.get_attack_multiplier())
+            return f"{self.next_action}{dmg}"
+        elif self.next_action == "毒击":
+            return f"毒击{self.next_value}"
         elif self.next_action == "防御":
             return f"防御+{self.next_value}"
         return "???"
+
+    def status_display(self) -> str:
+        return " ".join(s.display() for s in self.statuses) if self.statuses else ""
 
 
 def create_enemies(floor: int, is_boss: bool = False) -> list[Enemy]:
@@ -89,6 +150,7 @@ class Player:
     draw_pile: list[Card] = field(default_factory=list)
     discard_pile: list[Card] = field(default_factory=list)
     hand: list[Card] = field(default_factory=list)
+    statuses: list[StatusEffect] = field(default_factory=list)
 
     def start_battle(self):
         self.block = 0
@@ -96,6 +158,7 @@ class Player:
         self.draw_pile = shuffle(self.deck.copy())
         self.discard_pile = []
         self.hand = []
+        self.statuses = []
         self.draw_cards(5)
 
     def draw_cards(self, count: int):
@@ -108,6 +171,43 @@ class Player:
             if self.draw_pile:
                 self.hand.append(self.draw_pile.pop())
 
+    def add_status(self, status_type: StatusType, duration: int, value: int = 0) -> str:
+        existing = next((s for s in self.statuses if s.status_type == status_type), None)
+        if existing:
+            if status_type in (StatusType.POISON, StatusType.BURN, StatusType.STRENGTH):
+                existing.value += value
+                existing.duration = max(existing.duration, duration) if status_type != StatusType.STRENGTH else existing.duration + duration
+            else:
+                existing.duration = max(existing.duration, duration)
+        else:
+            self.statuses.append(StatusEffect(status_type, duration, value))
+        return f"你获得{status_type.display_name}状态"
+
+    def get_damage_multiplier(self) -> float:
+        mult = 1.0
+        for s in self.statuses:
+            if s.status_type == StatusType.STRENGTH:
+                mult *= (1 + s.value * 0.5)
+        return mult
+
+    def tick_statuses(self) -> list[str]:
+        messages = []
+        to_remove = []
+        for s in self.statuses:
+            if s.status_type == StatusType.POISON:
+                dmg = self.take_damage(s.value)
+                messages.append(f"你因中毒受到{dmg}点伤害")
+            elif s.status_type == StatusType.BURN:
+                dmg = self.take_damage(s.value)
+                messages.append(f"你因燃烧受到{dmg}点伤害")
+                s.value += 3
+            s.duration -= 1
+            if s.duration <= 0:
+                to_remove.append(s)
+        for s in to_remove:
+            self.statuses.remove(s)
+        return messages
+
     def play_card(self, index: int, enemies: list[Enemy]) -> tuple[bool, str]:
         if index < 0 or index >= len(self.hand):
             return False, "无效的卡牌序号"
@@ -119,21 +219,32 @@ class Player:
         self.hand.pop(index)
         self.discard_pile.append(card)
 
-        msg = ""
+        msg_parts = []
         if card.card_type.value == "attack":
             target = next((e for e in enemies if e.is_alive()), None)
             if target:
-                dmg = target.take_damage(card.value)
-                msg = f"你使用{card.name}，对{target.name}造成{dmg}点伤害"
+                base_dmg = card.value
+                dmg = int(base_dmg * self.get_damage_multiplier())
+                actual = target.take_damage(dmg)
+                msg_parts.append(f"你使用{card.name}，对{target.name}造成{actual}点伤害")
         elif card.card_type.value == "defense":
             self.block += card.value
-            msg = f"你使用{card.name}，获得{card.value}点护甲"
+            msg_parts.append(f"你使用{card.name}，获得{card.value}点护甲")
         elif card.card_type.value == "heal":
             healed = min(card.value, self.max_hp - self.hp)
             self.hp += healed
-            msg = f"你使用{card.name}，恢复{healed}点生命"
+            msg_parts.append(f"你使用{card.name}，恢复{healed}点生命")
         
-        return True, msg
+        if card.applies_status:
+            target = next((e for e in enemies if e.is_alive()), None)
+            if target and card.status_target == "enemy":
+                status_msg = target.add_status(card.status_type, card.status_duration, card.status_value)
+                msg_parts.append(status_msg)
+            elif card.status_target == "self":
+                status_msg = self.add_status(card.status_type, card.status_duration, card.status_value)
+                msg_parts.append(status_msg)
+        
+        return True, "，".join(msg_parts)
 
     def take_damage(self, damage: int) -> int:
         remaining = damage
@@ -159,6 +270,9 @@ class Player:
         healed = min(amount, self.max_hp - self.hp)
         self.hp += healed
         return healed
+
+    def status_display(self) -> str:
+        return " ".join(s.display() for s in self.statuses) if self.statuses else ""
 
 
 @dataclass
